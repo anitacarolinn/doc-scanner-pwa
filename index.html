@@ -99,6 +99,35 @@
            background: #111; color: #fff; padding: 10px 16px; border-radius: 22px; font-size: 13px; z-index: 60;
            opacity: 0; transition: opacity .2s; pointer-events: none; }
   .toast.on { opacity: .92; }
+
+  /* camera FAB "+" badge + remove label */
+  nav .cam .fab { position: relative; }
+  nav .cam .plus { position: absolute; top: -3px; right: -3px; width: 21px; height: 21px; background: #f97316;
+    color: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-size: 15px; font-weight: 700; line-height: 1; border: 2px solid #fff; }
+
+  /* live camera scanner */
+  .camera { position: fixed; inset: 0; z-index: 55; background: #000; display: none; flex-direction: column; }
+  .camera.on { display: flex; }
+  .camera .cbar { padding: calc(8px + env(safe-area-inset-top)) 16px 8px; display: flex; align-items: center; }
+  .camera .cbar button { background: none; border: none; color: #fff; padding: 6px; cursor: pointer; }
+  .camera .cbar .ic { width: 26px; height: 26px; stroke: #fff; }
+  .camera .hint { color: #fff; font-size: 13px; opacity: .85; margin-left: 12px; }
+  .camera video { flex: 1; width: 100%; object-fit: cover; background: #000; }
+  .camera .cam-controls { position: relative; display: flex; align-items: center; justify-content: center;
+    padding: 18px 24px calc(22px + var(--safe-b)); }
+  #cam-shutter { width: 74px; height: 74px; border-radius: 50%; background: #fff; border: 5px solid var(--teal); cursor: pointer; }
+  #cam-shutter:active { transform: scale(.94); }
+  #cam-undo { position: absolute; left: 26px; top: 50%; transform: translateY(-50%); color: #fff;
+    background: rgba(255,255,255,.16); border: none; width: 50px; height: 50px; border-radius: 50%; cursor: pointer; }
+  #cam-undo .ic { width: 22px; height: 22px; stroke: #fff; }
+  #cam-done-wrap { position: absolute; right: 18px; top: 50%; transform: translateY(-50%);
+    display: flex; flex-direction: column; align-items: center; gap: 7px; }
+  #cam-thumb-wrap { position: relative; }
+  #cam-thumb { width: 46px; height: 60px; object-fit: cover; border-radius: 6px; border: 2px solid #fff; background:#222; }
+  #cam-count { position: absolute; top: -8px; right: -8px; background: #f97316; color: #fff; font-size: 11px;
+    min-width: 19px; height: 19px; border-radius: 10px; display: flex; align-items: center; justify-content: center; padding: 0 4px; }
+  #cam-done { background: var(--teal); color: #fff; border: none; border-radius: 9px; padding: 9px 18px; font-weight: 600; font-size: 15px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -147,9 +176,26 @@
 <!-- bottom nav -->
 <nav>
   <div class="tab active" data-tab="home"><svg class="ic" viewBox="0 0 24 24"><path d="M3 9.5 12 3l9 6.5"/><path d="M5 10v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V10"/></svg>Home</div>
-  <div class="cam" id="nav-cam"><div class="fab"><svg class="ic" viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3.2"/></svg></div><div class="lbl">Scan</div></div>
+  <div class="cam" id="nav-cam"><div class="fab"><svg class="ic" viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3.2"/></svg><span class="plus">+</span></div></div>
   <div class="tab" data-tab="files"><svg class="ic" viewBox="0 0 24 24"><path d="M4 4h7l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg>Files</div>
 </nav>
+
+<!-- live camera scanner -->
+<div class="camera" id="camera">
+  <div class="cbar">
+    <button id="cam-close"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg></button>
+    <span class="hint">Fill the frame with your document, then tap the shutter.</span>
+  </div>
+  <video id="cam-video" playsinline muted autoplay></video>
+  <div class="cam-controls">
+    <button id="cam-undo" title="Undo last"><svg class="ic" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-1"/></svg></button>
+    <button id="cam-shutter" title="Capture"></button>
+    <div id="cam-done-wrap">
+      <div id="cam-thumb-wrap"><img id="cam-thumb" alt=""><span id="cam-count">0</span></div>
+      <button id="cam-done">Done</button>
+    </div>
+  </div>
+</div>
 
 <!-- scan review sheet -->
 <div class="sheet" id="scan-sheet">
@@ -307,8 +353,49 @@ $("doc-share").onclick = async () => {
 /* ---------- scanning / capture flow ---------- */
 let scan = { files: [], mode: "gray" }; // raw captured Files + chosen filter
 const scanSheet = $("scan-sheet");
-function openScan() { scan = { files: [], mode: "gray" }; $("scan-title").value = ""; $("cam-input").click(); }
-$("nav-cam").onclick = openScan;
+const cameraEl = $("camera"), camVideo = $("cam-video");
+let camStream = null;
+
+// open the live camera (reset=false keeps existing pages, used by "Add more")
+async function openCamera(reset = true) {
+  if (reset) { scan = { files: [], mode: "gray" }; $("scan-title").value = ""; }
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+    camVideo.srcObject = camStream;
+    await camVideo.play();
+    updateCamUI();
+    cameraEl.classList.add("on");
+  } catch (e) {
+    $("cam-input").click(); // blocked / not HTTPS -> native camera picker
+  }
+}
+function stopCamera() { if (camStream) { camStream.getTracks().forEach((t) => t.stop()); camStream = null; } camVideo.srcObject = null; }
+function updateCamUI() {
+  const n = scan.files.length;
+  $("cam-count").textContent = n;
+  const has = n > 0;
+  $("cam-undo").style.visibility = has ? "visible" : "hidden";
+  $("cam-done-wrap").style.visibility = has ? "visible" : "hidden";
+  if (has) $("cam-thumb").src = URL.createObjectURL(scan.files[n - 1]);
+}
+$("nav-cam").onclick = () => openCamera(true);
+$("cam-close").onclick = () => { stopCamera(); cameraEl.classList.remove("on"); scan = { files: [], mode: "gray" }; };
+$("cam-undo").onclick = () => { scan.files.pop(); updateCamUI(); };
+$("cam-shutter").onclick = () => {
+  if (!camVideo.videoWidth) return;
+  const c = document.createElement("canvas");
+  c.width = camVideo.videoWidth; c.height = camVideo.videoHeight;
+  c.getContext("2d").drawImage(camVideo, 0, 0);
+  c.toBlob((blob) => { scan.files.push(new File([blob], "page.jpg", { type: "image/jpeg" })); updateCamUI(); }, "image/jpeg", 0.92);
+};
+$("cam-done").onclick = () => {
+  stopCamera(); cameraEl.classList.remove("on");
+  if (!scan.files.length) return;
+  document.querySelectorAll(".sheet .filters button").forEach((b) => b.classList.toggle("active", b.dataset.mode === scan.mode));
+  scanSheet.classList.add("on");
+  renderScanPages();
+};
 $("qc-images").onclick = () => { scan = { files: [], mode: "gray" }; $("scan-title").value = ""; $("img-input").click(); };
 
 function addCaptured(fileList) {
@@ -321,7 +408,7 @@ function addCaptured(fileList) {
 }
 $("cam-input").onchange = (e) => { addCaptured(e.target.files); e.target.value = ""; };
 $("img-input").onchange = (e) => { addCaptured(e.target.files); e.target.value = ""; };
-$("scan-addmore").onclick = () => $("cam-input").click();
+$("scan-addmore").onclick = () => { scanSheet.classList.remove("on"); openCamera(false); };
 $("scan-cancel").onclick = () => { scanSheet.classList.remove("on"); scan = { files: [], mode: "gray" }; };
 
 document.querySelectorAll(".sheet .filters button").forEach((b) => b.onclick = () => {

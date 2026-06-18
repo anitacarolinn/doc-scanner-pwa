@@ -1,5 +1,5 @@
 // Simple offline cache for the app shell. Bump CACHE to force an update.
-const CACHE = "docscanner-v1";
+const CACHE = "docscanner-v2";
 const ASSETS = [
   "./",
   "./index.html",
