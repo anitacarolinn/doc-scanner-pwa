@@ -113,9 +113,17 @@
   .camera .cbar button { background: none; border: none; color: #fff; padding: 6px; cursor: pointer; }
   .camera .cbar .ic { width: 26px; height: 26px; stroke: #fff; }
   .camera .hint { color: #fff; font-size: 13px; opacity: .85; margin-left: 12px; }
-  .camera video { flex: 1; width: 100%; object-fit: cover; background: #000; }
+  .camera .cam-stage { position: relative; flex: 1; overflow: hidden; background: #000; }
+  .camera .cam-stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .camera .cam-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .camera .cam-mode { display: flex; justify-content: center; gap: 0; padding: 8px; }
+  .camera .cam-mode button { background: rgba(255,255,255,.12); color: #cbd5e1; border: none; padding: 6px 20px;
+    font-size: 14px; cursor: pointer; }
+  .camera .cam-mode button:first-child { border-radius: 16px 0 0 16px; }
+  .camera .cam-mode button:last-child { border-radius: 0 16px 16px 0; }
+  .camera .cam-mode button.active { background: #fff; color: #111; font-weight: 600; }
   .camera .cam-controls { position: relative; display: flex; align-items: center; justify-content: center;
-    padding: 18px 24px calc(22px + var(--safe-b)); }
+    padding: 14px 24px calc(22px + var(--safe-b)); }
   #cam-shutter { width: 74px; height: 74px; border-radius: 50%; background: #fff; border: 5px solid var(--teal); cursor: pointer; }
   #cam-shutter:active { transform: scale(.94); }
   #cam-undo { position: absolute; left: 26px; top: 50%; transform: translateY(-50%); color: #fff;
@@ -184,9 +192,16 @@
 <div class="camera" id="camera">
   <div class="cbar">
     <button id="cam-close"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg></button>
-    <span class="hint">Fill the frame with your document, then tap the shutter.</span>
+    <span class="hint" id="cam-hint">Point at a document</span>
   </div>
-  <video id="cam-video" playsinline muted autoplay></video>
+  <div class="cam-stage">
+    <video id="cam-video" playsinline muted autoplay></video>
+    <canvas id="cam-overlay"></canvas>
+  </div>
+  <div class="cam-mode">
+    <button data-cap="single">Single</button>
+    <button data-cap="batch" class="active">Batch</button>
+  </div>
   <div class="cam-controls">
     <button id="cam-undo" title="Undo last"><svg class="ic" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-1"/></svg></button>
     <button id="cam-shutter" title="Capture"></button>
@@ -222,6 +237,7 @@
 <div class="toast" id="toast"></div>
 
 <script src="./vendor/pdf-lib.min.js"></script>
+<script async src="./vendor/opencv.js"></script>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -353,10 +369,94 @@ $("doc-share").onclick = async () => {
 /* ---------- scanning / capture flow ---------- */
 let scan = { files: [], mode: "gray" }; // raw captured Files + chosen filter
 const scanSheet = $("scan-sheet");
-const cameraEl = $("camera"), camVideo = $("cam-video");
-let camStream = null;
+const cameraEl = $("camera"), camVideo = $("cam-video"), camOverlay = $("cam-overlay");
+let camStream = null, captureMode = "batch", detectTimer = null;
 
-// open the live camera (reset=false keeps existing pages, used by "Add more")
+/* ---- OpenCV document edge detection ---- */
+let cvReady = false;
+(function waitCv() { if (window.cv && window.cv.Mat) cvReady = true; else setTimeout(waitCv, 120); })();
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function orderCorners(p) {
+  const bySum = [...p].sort((a, b) => (a.x + a.y) - (b.x + b.y));
+  const byDiff = [...p].sort((a, b) => (a.x - a.y) - (b.x - b.y));
+  return { tl: bySum[0], br: bySum[3], bl: byDiff[0], tr: byDiff[3] };
+}
+// find the largest 4-corner contour in a canvas; returns {tl,tr,br,bl} or null
+function findCorners(canvas) {
+  let src, gray, edged, contours, hierarchy, result = null;
+  try {
+    src = cv.imread(canvas); gray = new cv.Mat(); edged = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0, 0);
+    cv.Canny(gray, edged, 50, 150);
+    const k = cv.Mat.ones(5, 5, cv.CV_8U); cv.dilate(edged, edged, k); k.delete();
+    contours = new cv.MatVector(); hierarchy = new cv.Mat();
+    cv.findContours(edged, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+    const minArea = src.rows * src.cols * 0.15;
+    let best = null, bestArea = 0;
+    for (let i = 0; i < contours.size(); i++) {
+      const c = contours.get(i), area = cv.contourArea(c);
+      if (area > bestArea && area > minArea) {
+        const peri = cv.arcLength(c, true), approx = new cv.Mat();
+        cv.approxPolyDP(c, approx, 0.02 * peri, true);
+        if (approx.rows === 4) { if (best) best.delete(); best = approx; bestArea = area; } else approx.delete();
+      }
+      c.delete();
+    }
+    if (best) {
+      const pts = [];
+      for (let i = 0; i < 4; i++) pts.push({ x: best.data32S[i * 2], y: best.data32S[i * 2 + 1] });
+      best.delete();
+      result = orderCorners(pts);
+    }
+  } catch (e) { result = null; }
+  if (src) src.delete(); if (gray) gray.delete(); if (edged) edged.delete();
+  if (contours) contours.delete(); if (hierarchy) hierarchy.delete();
+  return result;
+}
+// perspective-crop the frame to the detected document
+function warpToDoc(canvas, c) {
+  const src = cv.imread(canvas);
+  const W = Math.max(40, Math.round(Math.max(dist(c.tl, c.tr), dist(c.bl, c.br))));
+  const H = Math.max(40, Math.round(Math.max(dist(c.tl, c.bl), dist(c.tr, c.br))));
+  const s = cv.matFromArray(4, 1, cv.CV_32FC2, [c.tl.x, c.tl.y, c.tr.x, c.tr.y, c.br.x, c.br.y, c.bl.x, c.bl.y]);
+  const d = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, W, 0, W, H, 0, H]);
+  const M = cv.getPerspectiveTransform(s, d), dst = new cv.Mat();
+  cv.warpPerspective(src, dst, M, new cv.Size(W, H));
+  const out = document.createElement("canvas"); out.width = W; out.height = H; cv.imshow(out, dst);
+  src.delete(); dst.delete(); M.delete(); s.delete(); d.delete();
+  return out;
+}
+const detCanvas = document.createElement("canvas");
+function drawOverlay(corners, dw) {
+  const cw = camOverlay.clientWidth, ch = camOverlay.clientHeight;
+  camOverlay.width = cw; camOverlay.height = ch;
+  const ctx = camOverlay.getContext("2d");
+  ctx.clearRect(0, 0, cw, ch);
+  if (!corners) return;
+  const vw = camVideo.videoWidth, vh = camVideo.videoHeight;
+  const scale = Math.max(cw / vw, ch / vh), offX = (cw - vw * scale) / 2, offY = (ch - vh * scale) / 2;
+  const f = (vw / dw) * scale;
+  const m = (p) => ({ x: p.x * f + offX, y: p.y * f + offY });
+  const tl = m(corners.tl), tr = m(corners.tr), br = m(corners.br), bl = m(corners.bl);
+  ctx.beginPath(); ctx.moveTo(tl.x, tl.y); ctx.lineTo(tr.x, tr.y); ctx.lineTo(br.x, br.y); ctx.lineTo(bl.x, bl.y); ctx.closePath();
+  ctx.fillStyle = "rgba(20,184,166,0.22)"; ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = "#2dd4bf"; ctx.stroke();
+}
+function detectTick() {
+  if (!cameraEl.classList.contains("on")) return;
+  if (cvReady && camVideo.videoWidth) {
+    const vw = camVideo.videoWidth, vh = camVideo.videoHeight;
+    const dw = 320, dh = Math.round(320 * vh / vw);
+    detCanvas.width = dw; detCanvas.height = dh;
+    detCanvas.getContext("2d").drawImage(camVideo, 0, 0, dw, dh);
+    const corners = findCorners(detCanvas);
+    drawOverlay(corners, dw);
+    $("cam-hint").textContent = corners ? "Document detected — tap to capture" : "Point at a document";
+  }
+  detectTimer = setTimeout(detectTick, 180);
+}
+
 async function openCamera(reset = true) {
   if (reset) { scan = { files: [], mode: "gray" }; $("scan-title").value = ""; }
   try {
@@ -366,11 +466,16 @@ async function openCamera(reset = true) {
     await camVideo.play();
     updateCamUI();
     cameraEl.classList.add("on");
+    detectTick();
   } catch (e) {
     $("cam-input").click(); // blocked / not HTTPS -> native camera picker
   }
 }
-function stopCamera() { if (camStream) { camStream.getTracks().forEach((t) => t.stop()); camStream = null; } camVideo.srcObject = null; }
+function stopCamera() {
+  if (detectTimer) { clearTimeout(detectTimer); detectTimer = null; }
+  if (camStream) { camStream.getTracks().forEach((t) => t.stop()); camStream = null; }
+  camVideo.srcObject = null;
+}
 function updateCamUI() {
   const n = scan.files.length;
   $("cam-count").textContent = n;
@@ -382,12 +487,22 @@ function updateCamUI() {
 $("nav-cam").onclick = () => openCamera(true);
 $("cam-close").onclick = () => { stopCamera(); cameraEl.classList.remove("on"); scan = { files: [], mode: "gray" }; };
 $("cam-undo").onclick = () => { scan.files.pop(); updateCamUI(); };
+document.querySelectorAll(".cam-mode button").forEach((b) => b.onclick = () => {
+  captureMode = b.dataset.cap;
+  document.querySelectorAll(".cam-mode button").forEach((x) => x.classList.toggle("active", x === b));
+});
 $("cam-shutter").onclick = () => {
   if (!camVideo.videoWidth) return;
   const c = document.createElement("canvas");
   c.width = camVideo.videoWidth; c.height = camVideo.videoHeight;
   c.getContext("2d").drawImage(camVideo, 0, 0);
-  c.toBlob((blob) => { scan.files.push(new File([blob], "page.jpg", { type: "image/jpeg" })); updateCamUI(); }, "image/jpeg", 0.92);
+  let pageCanvas = c;
+  if (cvReady) { try { const corners = findCorners(c); if (corners) pageCanvas = warpToDoc(c, corners); } catch (e) {} }
+  pageCanvas.toBlob((blob) => {
+    scan.files.push(new File([blob], "page.jpg", { type: "image/jpeg" }));
+    updateCamUI();
+    if (captureMode === "single") $("cam-done").click();
+  }, "image/jpeg", 0.92);
 };
 $("cam-done").onclick = () => {
   stopCamera(); cameraEl.classList.remove("on");
