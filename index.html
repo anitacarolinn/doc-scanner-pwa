@@ -106,36 +106,67 @@
     color: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center;
     font-size: 15px; font-weight: 700; line-height: 1; border: 2px solid #fff; }
 
-  /* live camera scanner */
+  /* live camera scanner — CamScanner style */
   .camera { position: fixed; inset: 0; z-index: 55; background: #000; display: none; flex-direction: column; }
   .camera.on { display: flex; }
-  .camera .cbar { padding: calc(8px + env(safe-area-inset-top)) 16px 8px; display: flex; align-items: center; }
-  .camera .cbar button { background: none; border: none; color: #fff; padding: 6px; cursor: pointer; }
-  .camera .cbar .ic { width: 26px; height: 26px; stroke: #fff; }
-  .camera .hint { color: #fff; font-size: 13px; opacity: .85; margin-left: 12px; }
+
+  /* top icon bar */
+  .camera .cbar { padding: calc(10px + env(safe-area-inset-top)) 14px 10px; display: flex; align-items: center; gap: 4px; }
+  .camera .cbar button { background: none; border: none; color: #fff; padding: 6px; cursor: pointer; display: flex; align-items: center; }
+  .camera .cbar .ic { width: 24px; height: 24px; stroke: #fff; fill: none; }
+  .camera .cbar .grow { flex: 1; }
+  .camera .cbar .hd { position: relative; font-size: 12px; font-weight: 800; letter-spacing: .5px; color: #fff;
+    border: 2px solid #fff; border-radius: 6px; padding: 1px 5px; }
+  .camera .cbar .hd .rdot, .camera .cbar .fdot { position: absolute; top: -2px; right: -2px; width: 8px; height: 8px;
+    background: #f97316; border-radius: 50%; }
+  .camera #cam-flash.on .ic { stroke: #fbbf24; }
+
+  /* stage */
   .camera .cam-stage { position: relative; flex: 1; overflow: hidden; background: #000; }
   .camera .cam-stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   .camera .cam-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-  .camera .cam-mode { display: flex; justify-content: center; gap: 0; padding: 8px; }
-  .camera .cam-mode button { background: rgba(255,255,255,.12); color: #cbd5e1; border: none; padding: 6px 20px;
-    font-size: 14px; cursor: pointer; }
-  .camera .cam-mode button:first-child { border-radius: 16px 0 0 16px; }
-  .camera .cam-mode button:last-child { border-radius: 0 16px 16px 0; }
-  .camera .cam-mode button.active { background: #fff; color: #111; font-weight: 600; }
-  .camera .cam-controls { position: relative; display: flex; align-items: center; justify-content: center;
-    padding: 14px 24px calc(22px + var(--safe-b)); }
+  .camera .hint { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); color: #fff; font-size: 12.5px;
+    background: rgba(0,0,0,.45); padding: 5px 13px; border-radius: 20px; white-space: nowrap; transition: opacity .2s; }
+
+  /* floating captured-page card (bottom-right of stage) */
+  #cam-stack { position: absolute; right: 14px; bottom: 16px; display: none; flex-direction: column; align-items: center; gap: 7px; }
+  #cam-stack.on { display: flex; }
+  #cam-thumb-wrap { position: relative; cursor: pointer; }
+  #cam-thumb { width: 96px; height: 128px; object-fit: cover; border-radius: 9px; border: 2px solid #fff; background: #222;
+    box-shadow: 0 4px 14px rgba(0,0,0,.55); display: block; }
+  #cam-count { position: absolute; top: -9px; right: -9px; background: #f97316; color: #fff; font-size: 13px; font-weight: 700;
+    min-width: 23px; height: 23px; border-radius: 12px; display: flex; align-items: center; justify-content: center; padding: 0 5px;
+    border: 2px solid #000; }
+  #cam-chev { position: absolute; right: -10px; top: 50%; transform: translateY(-50%); width: 26px; height: 26px; border-radius: 50%;
+    background: rgba(0,0,0,.55); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 17px; }
+  #cam-modify { background: var(--teal); color: #fff; border: none; border-radius: 8px; padding: 7px 18px; font-size: 13px;
+    font-weight: 600; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.4); }
+
+  /* Single / Batch segmented pill */
+  .cam-seg { display: flex; justify-content: center; padding: 6px 0 2px; }
+  .cam-seg .seg-pill { display: inline-flex; background: rgba(40,40,40,.78); border-radius: 22px; padding: 3px; }
+  .cam-seg button { background: none; color: #cbd5e1; border: none; padding: 7px 24px; font-size: 14px; border-radius: 20px; cursor: pointer; }
+  .cam-seg button.active { background: rgba(255,255,255,.22); color: #fff; font-weight: 600; }
+
+  /* mode strip */
+  .cam-modes { display: flex; gap: 26px; overflow-x: auto; padding: 9px 20px 5px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .cam-modes::-webkit-scrollbar { display: none; }
+  .cam-modes span { color: #cbd5e1; font-size: 14px; white-space: nowrap; flex: none; opacity: .75; cursor: pointer; }
+  .cam-modes span.active { color: var(--teal); font-weight: 700; opacity: 1; }
+  .cam-seg.hide, .cam-modes.hide { display: none; }
+
+  /* bottom controls */
+  .camera .cam-controls { position: relative; display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 24px calc(18px + var(--safe-b)); }
+  .cam-side { width: 84px; display: flex; align-items: center; }
+  .cam-side.right { justify-content: flex-end; }
+  .cam-side button { background: none; border: none; color: #fff; cursor: pointer; display: flex; align-items: center; }
+  .cam-side .ic { width: 30px; height: 30px; stroke: #fff; fill: none; }
+  #cam-done { background: var(--teal); color: #fff; border-radius: 9px; padding: 11px 22px; font-weight: 700; font-size: 15px; }
+  .cam-shutter-wrap { display: flex; flex-direction: column; align-items: center; gap: 7px; }
+  .cam-shutter-wrap .scan-label { color: var(--teal); font-size: 14px; font-weight: 700; }
   #cam-shutter { width: 74px; height: 74px; border-radius: 50%; background: #fff; border: 5px solid var(--teal); cursor: pointer; }
   #cam-shutter:active { transform: scale(.94); }
-  #cam-undo { position: absolute; left: 26px; top: 50%; transform: translateY(-50%); color: #fff;
-    background: rgba(255,255,255,.16); border: none; width: 50px; height: 50px; border-radius: 50%; cursor: pointer; }
-  #cam-undo .ic { width: 22px; height: 22px; stroke: #fff; }
-  #cam-done-wrap { position: absolute; right: 18px; top: 50%; transform: translateY(-50%);
-    display: flex; flex-direction: column; align-items: center; gap: 7px; }
-  #cam-thumb-wrap { position: relative; }
-  #cam-thumb { width: 46px; height: 60px; object-fit: cover; border-radius: 6px; border: 2px solid #fff; background:#222; }
-  #cam-count { position: absolute; top: -8px; right: -8px; background: #f97316; color: #fff; font-size: 11px;
-    min-width: 19px; height: 19px; border-radius: 10px; display: flex; align-items: center; justify-content: center; padding: 0 4px; }
-  #cam-done { background: var(--teal); color: #fff; border: none; border-radius: 9px; padding: 9px 18px; font-weight: 600; font-size: 15px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -192,22 +223,47 @@
 <div class="camera" id="camera">
   <div class="cbar">
     <button id="cam-close"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg></button>
-    <span class="hint" id="cam-hint">Point at a document</span>
+    <span class="grow"></span>
+    <button id="cam-flash" title="Flash"><svg class="ic" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/><path d="M3 3l18 18" stroke="#000" stroke-width="1.5" opacity=".0"/></svg></button>
+    <button class="hd" id="cam-hd">HD<span class="rdot"></span></button>
+    <button id="cam-filter" title="Filter"><svg class="ic" viewBox="0 0 24 24"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/></svg><span class="fdot"></span></button>
+    <button id="cam-more" title="More"><svg class="ic" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" fill="#fff"/><circle cx="12" cy="12" r="1.6" fill="#fff"/><circle cx="19" cy="12" r="1.6" fill="#fff"/></svg></button>
   </div>
   <div class="cam-stage">
     <video id="cam-video" playsinline muted autoplay></video>
     <canvas id="cam-overlay"></canvas>
+    <span class="hint" id="cam-hint">Point at a document</span>
+    <div id="cam-stack">
+      <div id="cam-thumb-wrap">
+        <img id="cam-thumb" alt="">
+        <span id="cam-count">0</span>
+        <span id="cam-chev">›</span>
+      </div>
+      <button id="cam-modify">Modify</button>
+    </div>
   </div>
-  <div class="cam-mode">
-    <button data-cap="single">Single</button>
-    <button data-cap="batch" class="active">Batch</button>
+  <div class="cam-seg" id="cam-seg">
+    <div class="seg-pill">
+      <button data-cap="single">Single</button>
+      <button data-cap="batch" class="active">Batch</button>
+    </div>
+  </div>
+  <div class="cam-modes" id="cam-modes">
+    <span>Text</span><span>ID Cards</span><span>Sign</span>
+    <span class="active">Scan</span><span>To Word</span><span>Question Set</span>
   </div>
   <div class="cam-controls">
-    <button id="cam-undo" title="Undo last"><svg class="ic" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-1"/></svg></button>
-    <button id="cam-shutter" title="Capture"></button>
-    <div id="cam-done-wrap">
-      <div id="cam-thumb-wrap"><img id="cam-thumb" alt=""><span id="cam-count">0</span></div>
-      <button id="cam-done">Done</button>
+    <div class="cam-side left">
+      <button id="cam-grid" title="Photos"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></button>
+      <button id="cam-undo" title="Undo last" style="display:none"><svg class="ic" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-1"/></svg></button>
+    </div>
+    <div class="cam-shutter-wrap">
+      <span class="scan-label">Scan</span>
+      <button id="cam-shutter" title="Capture"></button>
+    </div>
+    <div class="cam-side right">
+      <button id="cam-gallery" title="Import photo"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="8.5" cy="8.5" r="1.8"/><path d="m21 15-5-5L5 21"/></svg></button>
+      <button id="cam-done" style="display:none">Done</button>
     </div>
   </div>
 </div>
@@ -231,6 +287,7 @@
 
 <!-- hidden inputs -->
 <input type="file" id="cam-input" accept="image/*" capture="environment" multiple hidden>
+<input type="file" id="cam-gallery-input" accept="image/*" multiple hidden>
 <input type="file" id="img-input" accept="image/*" multiple hidden>
 <input type="file" id="file-input" accept="application/pdf,image/*" multiple hidden>
 
@@ -440,8 +497,18 @@ function drawOverlay(corners, dw) {
   const m = (p) => ({ x: p.x * f + offX, y: p.y * f + offY });
   const tl = m(corners.tl), tr = m(corners.tr), br = m(corners.br), bl = m(corners.bl);
   ctx.beginPath(); ctx.moveTo(tl.x, tl.y); ctx.lineTo(tr.x, tr.y); ctx.lineTo(br.x, br.y); ctx.lineTo(bl.x, bl.y); ctx.closePath();
-  ctx.fillStyle = "rgba(20,184,166,0.22)"; ctx.fill();
-  ctx.lineWidth = 3; ctx.strokeStyle = "#2dd4bf"; ctx.stroke();
+  ctx.fillStyle = "rgba(58,224,180,0.18)"; ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = "#3ae0b4"; ctx.lineJoin = "round"; ctx.stroke();
+  // corner accents
+  ctx.lineWidth = 6;
+  const seg = 26;
+  const pts = [tl, tr, br, bl];
+  for (let i = 0; i < 4; i++) {
+    const p = pts[i], a = pts[(i + 3) % 4], b = pts[(i + 1) % 4];
+    const to = (q) => { const d = Math.hypot(q.x - p.x, q.y - p.y) || 1; return { x: p.x + (q.x - p.x) / d * seg, y: p.y + (q.y - p.y) / d * seg }; };
+    const pa = to(a), pb = to(b);
+    ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(p.x, p.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
+  }
 }
 function detectTick() {
   if (!cameraEl.classList.contains("on")) return;
@@ -478,19 +545,69 @@ function stopCamera() {
 }
 function updateCamUI() {
   const n = scan.files.length;
-  $("cam-count").textContent = n;
   const has = n > 0;
-  $("cam-undo").style.visibility = has ? "visible" : "hidden";
-  $("cam-done-wrap").style.visibility = has ? "visible" : "hidden";
+  $("cam-count").textContent = n;
+  $("cam-stack").classList.toggle("on", has);          // floating thumbnail + Modify
+  $("cam-seg").classList.toggle("hide", has);          // Single/Batch pill (only before capturing)
+  $("cam-modes").classList.toggle("hide", has);        // mode strip
+  $("cam-grid").style.display = has ? "none" : "flex";
+  $("cam-undo").style.display = has ? "flex" : "none";
+  $("cam-gallery").style.display = has ? "none" : "flex";
+  $("cam-done").style.display = has ? "block" : "none";
+  $("cam-hint").style.display = has ? "none" : "block";
   if (has) $("cam-thumb").src = URL.createObjectURL(scan.files[n - 1]);
 }
 $("nav-cam").onclick = () => openCamera(true);
 $("cam-close").onclick = () => { stopCamera(); cameraEl.classList.remove("on"); scan = { files: [], mode: "gray" }; };
 $("cam-undo").onclick = () => { scan.files.pop(); updateCamUI(); };
-document.querySelectorAll(".cam-mode button").forEach((b) => b.onclick = () => {
+document.querySelectorAll(".cam-seg button").forEach((b) => b.onclick = () => {
   captureMode = b.dataset.cap;
-  document.querySelectorAll(".cam-mode button").forEach((x) => x.classList.toggle("active", x === b));
+  document.querySelectorAll(".cam-seg button").forEach((x) => x.classList.toggle("active", x === b));
 });
+
+/* flash / torch toggle */
+let torchOn = false;
+$("cam-flash").onclick = async () => {
+  try {
+    const track = camStream && camStream.getVideoTracks()[0];
+    const caps = track && track.getCapabilities ? track.getCapabilities() : {};
+    if (!track || !caps.torch) { toast("Flash not available on this camera"); return; }
+    torchOn = !torchOn;
+    await track.applyConstraints({ advanced: [{ torch: torchOn }] });
+    $("cam-flash").classList.toggle("on", torchOn);
+  } catch (e) { toast("Flash not available"); }
+};
+
+/* filter dot cycles the scan look (applied on review/save) */
+const FILTERS = ["gray", "bw", "color"], FILTER_LABEL = { gray: "Enhance", bw: "B&W", color: "Color" };
+$("cam-filter").onclick = () => {
+  scan.mode = FILTERS[(FILTERS.indexOf(scan.mode) + 1) % FILTERS.length];
+  toast("Filter: " + FILTER_LABEL[scan.mode]);
+};
+$("cam-more").onclick = () => toast("HD scan · auto edge-detect are on");
+
+/* import existing photos as scanned pages, staying in the camera */
+$("cam-grid").onclick = () => $("cam-gallery-input").click();
+$("cam-gallery").onclick = () => $("cam-gallery-input").click();
+$("cam-gallery-input").onchange = (e) => {
+  const imgs = [...e.target.files].filter((f) => f.type.startsWith("image/"));
+  e.target.value = "";
+  if (!imgs.length) return;
+  scan.files.push(...imgs);
+  updateCamUI();
+  toast(imgs.length + " photo" + (imgs.length > 1 ? "s" : "") + " added");
+};
+
+/* finish capturing -> open the review sheet (where you crop/filter/save) */
+function finishToReview() {
+  stopCamera(); cameraEl.classList.remove("on");
+  if (!scan.files.length) return;
+  document.querySelectorAll(".sheet .filters button").forEach((b) => b.classList.toggle("active", b.dataset.mode === scan.mode));
+  scanSheet.classList.add("on");
+  renderScanPages();
+}
+$("cam-modify").onclick = finishToReview;
+$("cam-thumb-wrap").onclick = finishToReview;
 $("cam-shutter").onclick = () => {
   if (!camVideo.videoWidth) return;
   const c = document.createElement("canvas");
@@ -501,16 +618,10 @@ $("cam-shutter").onclick = () => {
   pageCanvas.toBlob((blob) => {
     scan.files.push(new File([blob], "page.jpg", { type: "image/jpeg" }));
     updateCamUI();
-    if (captureMode === "single") $("cam-done").click();
+    if (captureMode === "single") finishToReview();
   }, "image/jpeg", 0.92);
 };
-$("cam-done").onclick = () => {
-  stopCamera(); cameraEl.classList.remove("on");
-  if (!scan.files.length) return;
-  document.querySelectorAll(".sheet .filters button").forEach((b) => b.classList.toggle("active", b.dataset.mode === scan.mode));
-  scanSheet.classList.add("on");
-  renderScanPages();
-};
+$("cam-done").onclick = finishToReview;
 $("qc-images").onclick = () => { scan = { files: [], mode: "gray" }; $("scan-title").value = ""; $("img-input").click(); };
 
 function addCaptured(fileList) {
