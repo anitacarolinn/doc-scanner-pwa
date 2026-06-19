@@ -1,5 +1,5 @@
 // Simple offline cache for the app shell. Bump CACHE to force an update.
-const CACHE = "docscanner-v4";
+const CACHE = "docscanner-v5";
 const ASSETS = [
   "./",
   "./index.html",
@@ -22,10 +22,18 @@ self.addEventListener("activate", (e) => {
   );
 });
 
-// Cache-first for our own assets; network for everything else.
+// Cache-first for our own assets, and runtime-cache anything new (e.g. the
+// OCR core + language data) so the app — and offline OCR — work after first use.
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
-  if (url.origin === location.origin) {
-    e.respondWith(caches.match(e.request).then((r) => r || fetch(e.request)));
+  if (url.origin === location.origin && e.request.method === "GET") {
+    e.respondWith(
+      caches.match(e.request).then((r) =>
+        r || fetch(e.request).then((resp) => {
+          if (resp && resp.ok) { const copy = resp.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); }
+          return resp;
+        }).catch(() => r)
+      )
+    );
   }
 });

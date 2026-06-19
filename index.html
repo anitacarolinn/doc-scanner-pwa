@@ -85,6 +85,13 @@
   .sheet .titlerow input { width: 100%; padding: 11px 12px; border-radius: 10px; border: none; font-size: 15px; }
   .sheet .addmore { display: block; width: 100%; padding: 12px; margin-bottom: 10px; background: #1f1f1f;
                     color: var(--teal); border: 1px dashed #3a3a3a; border-radius: 10px; font-size: 14px; cursor: pointer; }
+  #ocr-status { padding: 6px 16px 10px; color: var(--teal); font-size: 13px; }
+  #ocr-text { flex: 1; margin: 0 16px; padding: 12px; border-radius: 10px; border: none; resize: none;
+              font-size: 15px; line-height: 1.5; background: #fff; color: #111; font-family: inherit; }
+  .ocr-actions { display: flex; gap: 10px; padding: 12px 16px calc(14px + var(--safe-b)); }
+  .ocr-actions button { flex: 1; padding: 12px; border-radius: 10px; border: none; background: var(--teal);
+                        color: #fff; font-weight: 600; font-size: 14px; cursor: pointer; }
+  #view-doc .vbar button#doc-ocr { background: #fff; color: var(--teal); border-color: var(--teal); }
 
   /* doc viewer */
   #view-doc .vbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
@@ -208,6 +215,7 @@
     <div class="vbar">
       <button id="doc-back"><svg class="ic" width="18" height="18" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
       <span class="nm" id="doc-name"></span>
+      <button id="doc-ocr"><svg class="ic" width="16" height="16" viewBox="0 0 24 24"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg>Text</button>
       <button class="share" id="doc-share"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" stroke="#fff"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v14"/></svg>Share</button>
       <button class="del" id="doc-del"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" stroke="#ef4444"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
     </div>
@@ -288,6 +296,21 @@
   <div class="titlerow"><input id="scan-title" placeholder="Document name"></div>
 </div>
 
+<!-- OCR result sheet -->
+<div class="sheet" id="ocr-sheet">
+  <div class="bar">
+    <button id="ocr-close">Close</button>
+    <span class="grow"></span>
+    <button class="save" id="ocr-copy">Copy</button>
+  </div>
+  <div id="ocr-status">Recognizing…</div>
+  <textarea id="ocr-text" placeholder="Recognized text will appear here…" spellcheck="false"></textarea>
+  <div class="ocr-actions">
+    <button id="ocr-txt">⤓ Save .txt</button>
+    <button id="ocr-word">⤓ Save Word (.doc)</button>
+  </div>
+</div>
+
 <!-- hidden inputs -->
 <input type="file" id="cam-input" accept="image/*" capture="environment" multiple hidden>
 <input type="file" id="cam-gallery-input" accept="image/*" multiple hidden>
@@ -297,6 +320,7 @@
 <div class="toast" id="toast"></div>
 
 <script src="./vendor/pdf-lib.min.js"></script>
+<script src="./vendor/tesseract/tesseract.min.js"></script>
 <script async src="./vendor/opencv.js"></script>
 <script>
 "use strict";
@@ -396,10 +420,10 @@ async function renderFiles() {
 $("search").addEventListener("input", () => { if ($("view-files").classList.contains("on")) renderFiles(); });
 
 /* ---------- doc viewer ---------- */
-let currentDocId = null;
+let currentDocId = null, currentDoc = null;
 async function openDoc(id) {
   const doc = await dbGet(id); if (!doc) return;
-  currentDocId = id;
+  currentDocId = id; currentDoc = doc;
   $("doc-name").textContent = doc.name || "Untitled";
   const pg = $("doc-pages"); pg.innerHTML = "";
   doc.pages.forEach((p) => { const img = document.createElement("img"); img.src = URL.createObjectURL(p.blob); pg.append(img); });
@@ -617,15 +641,15 @@ document.querySelectorAll(".cam-seg button").forEach((b) => b.onclick = () => {
 const MODE_INFO = {
   scan: "Scan: auto-crop + enhance each page",
   idcard: "ID Card: take front & back — both go on one page",
-  text: "Text (OCR) isn't installed yet — tell me to add it",
-  toword: "To Word (OCR) isn't installed yet — tell me to add it",
+  text: "Text: after saving, it extracts editable text (OCR)",
+  toword: "To Word: after saving, it exports a Word (.doc) file",
   sign: "Sign: coming soon",
   questionset: "Question Set isn't a scanner feature",
 };
 document.querySelectorAll(".cam-modes span").forEach((s) => s.onclick = () => {
   const m = s.dataset.mode;
   document.querySelectorAll(".cam-modes span").forEach((x) => x.classList.toggle("active", x === s));
-  scanType = (m === "scan" || m === "idcard") ? m : "scan"; // others behave like Scan for now
+  scanType = ["scan", "idcard", "text", "toword"].includes(m) ? m : "scan";
   if (m === "idcard") captureMode = "batch"; // need at least 2 shots
   toast(MODE_INFO[m] || "");
 });
@@ -771,10 +795,14 @@ $("scan-save").onclick = async () => {
     }
     const created = Date.now();
     const name = ($("scan-title").value || "").trim() || ("Scan " + fmtDate(created));
-    await dbPut({ id: "d" + created + "_" + Math.round(performance.now()), name, created, pages });
+    const id = "d" + created + "_" + Math.round(performance.now());
+    const savedDoc = { id, name, created, pages };
+    await dbPut(savedDoc);
+    const mode = scanType;
     scanSheet.classList.remove("on"); scan = { files: [], mode: "gray" };
     toast("Saved");
     show("files");
+    if (mode === "text" || mode === "toword") runOcr(savedDoc, mode === "toword");
   } catch (e) { toast("Save failed: " + e.message); }
 };
 
@@ -788,6 +816,72 @@ $("file-input").onchange = async (e) => {
   if (imgs.length) { scan = { files: [], mode: "color" }; $("scan-title").value = ""; addCaptured(imgs); return; }
   toast("Tip: import images to scan. (PDF editing lives in the desktop app.)");
 };
+
+/* ---------- OCR (Tesseract.js, 100% on-device) ---------- */
+const ocrSheet = $("ocr-sheet");
+let _ocrWorker = null, _ocrSrc = null;
+async function getOcrWorker(onProgress) {
+  if (_ocrWorker) return _ocrWorker;
+  if (typeof Tesseract === "undefined") throw new Error("OCR library not loaded");
+  const vbase = new URL("./vendor/", location.href).href; // absolute so the worker resolves paths correctly
+  _ocrWorker = await Tesseract.createWorker(["eng", "chi_tra"], 1, {
+    workerPath: vbase + "tesseract/worker.min.js",
+    corePath: vbase + "tesseract/",
+    langPath: vbase + "tessdata/",
+    gzip: false,
+    logger: (m) => { if (onProgress) onProgress(m); },
+  });
+  return _ocrWorker;
+}
+async function runOcr(doc, asWord) {
+  if (!doc || !doc.pages || !doc.pages.length) { toast("Nothing to recognize"); return; }
+  _ocrSrc = doc;
+  $("ocr-text").value = "";
+  $("ocr-status").textContent = "Loading OCR engine (first run downloads ~13 MB, then cached)…";
+  ocrSheet.classList.add("on");
+  try {
+    const worker = await getOcrWorker((m) => {
+      if (m.status === "recognizing text") $("ocr-status").textContent = "Recognizing… " + Math.round(m.progress * 100) + "%";
+      else if (m.status) $("ocr-status").textContent = m.status.charAt(0).toUpperCase() + m.status.slice(1) + "…";
+    });
+    let all = "";
+    for (let i = 0; i < doc.pages.length; i++) {
+      $("ocr-status").textContent = "Recognizing page " + (i + 1) + " / " + doc.pages.length + "…";
+      const { data } = await worker.recognize(doc.pages[i].blob);
+      if (doc.pages.length > 1) all += "--- Page " + (i + 1) + " ---\n";
+      all += (data.text || "").trim() + "\n\n";
+    }
+    $("ocr-text").value = all.trim();
+    $("ocr-status").textContent = "Done — " + doc.pages.length + " page(s) recognized. Edit if needed, then Copy/Save.";
+    if (asWord) saveOcrWord();
+  } catch (e) {
+    $("ocr-status").textContent = "OCR failed: " + e.message;
+  }
+}
+function escapeHtml(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+async function shareOrDownload(blob, filename, title) {
+  const file = new File([blob], filename, { type: blob.type });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: title || filename }); return; }
+  } catch (e) { if (e && e.name === "AbortError") return; }
+  const url = URL.createObjectURL(blob); const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+function ocrName() { return (_ocrSrc && _ocrSrc.name) ? _ocrSrc.name : "document"; }
+function saveOcrTxt() { shareOrDownload(new Blob([$("ocr-text").value], { type: "text/plain;charset=utf-8" }), ocrName() + ".txt", ocrName()); }
+function saveOcrWord() {
+  const body = $("ocr-text").value.split("\n").map((l) => "<p>" + (escapeHtml(l) || "&nbsp;") + "</p>").join("");
+  const html = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"></head><body>' + body + "</body></html>";
+  shareOrDownload(new Blob(["﻿" + html], { type: "application/msword" }), ocrName() + ".doc", ocrName());
+}
+$("ocr-close").onclick = () => ocrSheet.classList.remove("on");
+$("ocr-copy").onclick = async () => {
+  try { await navigator.clipboard.writeText($("ocr-text").value); toast("Copied"); }
+  catch (e) { const t = $("ocr-text"); t.select(); document.execCommand("copy"); toast("Copied"); }
+};
+$("ocr-txt").onclick = saveOcrTxt;
+$("ocr-word").onclick = saveOcrWord;
+$("doc-ocr").onclick = () => { if (currentDoc) runOcr(currentDoc, false); };
 
 /* ---------- service worker ---------- */
 if ("serviceWorker" in navigator) {
