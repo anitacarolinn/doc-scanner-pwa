@@ -6,7 +6,7 @@
 <title>Doc Scanner</title>
 <link rel="manifest" href="./manifest.webmanifest">
 <meta name="theme-color" content="#14b8a6">
-<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Scanner">
@@ -120,6 +120,9 @@
   .camera .cbar .hd .rdot, .camera .cbar .fdot { position: absolute; top: -2px; right: -2px; width: 8px; height: 8px;
     background: #f97316; border-radius: 50%; }
   .camera #cam-flash.on .ic { stroke: #fbbf24; }
+  .camera .cbar .hd.off { opacity: .4; }
+  .camera .cbar .hd.off .rdot { display: none; }
+  .camera #cam-more.on .ic circle { fill: #2dd4bf !important; }
 
   /* stage */
   .camera .cam-stage { position: relative; flex: 1; overflow: hidden; background: #000; }
@@ -249,8 +252,8 @@
     </div>
   </div>
   <div class="cam-modes" id="cam-modes">
-    <span>Text</span><span>ID Cards</span><span>Sign</span>
-    <span class="active">Scan</span><span>To Word</span><span>Question Set</span>
+    <span data-mode="text">Text</span><span data-mode="idcard">ID Cards</span><span data-mode="sign">Sign</span>
+    <span data-mode="scan" class="active">Scan</span><span data-mode="toword">To Word</span><span data-mode="questionset">Question Set</span>
   </div>
   <div class="cam-controls">
     <div class="cam-side left">
@@ -321,7 +324,7 @@ async function dbDel(id) { const d = await db(); return new Promise((res, rej) =
 /* ---------- image processing (the "scan" look) ---------- */
 async function processFile(file, mode) {
   const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
-  const maxDim = 1600;
+  const maxDim = hdMode ? 2200 : 1500;
   const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
   const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale);
   const canvas = document.createElement("canvas"); canvas.width = w; canvas.height = h;
@@ -428,6 +431,7 @@ let scan = { files: [], mode: "gray" }; // raw captured Files + chosen filter
 const scanSheet = $("scan-sheet");
 const cameraEl = $("camera"), camVideo = $("cam-video"), camOverlay = $("cam-overlay");
 let camStream = null, captureMode = "batch", detectTimer = null;
+let hdMode = true, autoCapture = false, scanType = "scan";
 
 /* ---- OpenCV document edge detection ---- */
 let cvReady = false;
@@ -438,41 +442,76 @@ function orderCorners(p) {
   const byDiff = [...p].sort((a, b) => (a.x - a.y) - (b.x - b.y));
   return { tl: bySum[0], br: bySum[3], bl: byDiff[0], tr: byDiff[3] };
 }
-// find the largest 4-corner contour in a canvas; returns {tl,tr,br,bl} or null
+// Find the document quad in a canvas. Returns NORMALIZED corners {tl,tr,br,bl}
+// in 0..1 (resolution-independent) or null. Tries a clean 4-point contour first,
+// then falls back to the minimum-area rectangle of the largest contour — which
+// reliably finds a document even when its edges are broken or low-contrast.
 function findCorners(canvas) {
-  let src, gray, edged, contours, hierarchy, result = null;
+  let src, gray, edged, kernel, contours, hierarchy, result = null;
+  const W = canvas.width, H = canvas.height, frameArea = W * H;
+  const owned = [];
   try {
     src = cv.imread(canvas); gray = new cv.Mat(); edged = new cv.Mat();
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
     cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0, 0);
-    cv.Canny(gray, edged, 50, 150);
-    const k = cv.Mat.ones(5, 5, cv.CV_8U); cv.dilate(edged, edged, k); k.delete();
+    cv.Canny(gray, edged, 40, 120);
+    kernel = cv.Mat.ones(7, 7, cv.CV_8U);
+    cv.morphologyEx(edged, edged, cv.MORPH_CLOSE, kernel); // connect broken edges
     contours = new cv.MatVector(); hierarchy = new cv.Mat();
-    cv.findContours(edged, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-    const minArea = src.rows * src.cols * 0.15;
-    let best = null, bestArea = 0;
-    for (let i = 0; i < contours.size(); i++) {
-      const c = contours.get(i), area = cv.contourArea(c);
-      if (area > bestArea && area > minArea) {
-        const peri = cv.arcLength(c, true), approx = new cv.Mat();
-        cv.approxPolyDP(c, approx, 0.02 * peri, true);
-        if (approx.rows === 4) { if (best) best.delete(); best = approx; bestArea = area; } else approx.delete();
+    cv.findContours(edged, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    const cand = [];
+    for (let i = 0; i < contours.size(); i++) { const c = contours.get(i); owned.push(c); cand.push({ c, area: cv.contourArea(c) }); }
+    cand.sort((a, b) => b.area - a.area);
+    const minArea = frameArea * 0.10, maxArea = frameArea * 0.985;
+
+    let quad = null;
+    // 1) clean convex 4-gon
+    for (let n = 0; n < Math.min(cand.length, 6) && !quad; n++) {
+      const { c, area } = cand[n];
+      if (area < minArea || area > maxArea) continue;
+      const peri = cv.arcLength(c, true);
+      for (const eps of [0.02, 0.04, 0.06, 0.08]) {
+        const approx = new cv.Mat();
+        cv.approxPolyDP(c, approx, eps * peri, true);
+        if (approx.rows === 4 && cv.isContourConvex(approx)) {
+          quad = [];
+          for (let k = 0; k < 4; k++) quad.push({ x: approx.data32S[k * 2], y: approx.data32S[k * 2 + 1] });
+        }
+        approx.delete();
+        if (quad) break;
       }
-      c.delete();
     }
-    if (best) {
-      const pts = [];
-      for (let i = 0; i < 4; i++) pts.push({ x: best.data32S[i * 2], y: best.data32S[i * 2 + 1] });
-      best.delete();
-      result = orderCorners(pts);
+    // 2) fallback: rotated bounding rectangle of the largest sizable contour
+    if (!quad) {
+      for (let n = 0; n < Math.min(cand.length, 6); n++) {
+        const { c, area } = cand[n];
+        if (area < frameArea * 0.12 || area > maxArea) continue;
+        const rect = cv.minAreaRect(c);
+        const v = cv.RotatedRect.points(rect);
+        quad = [{ x: v[0].x, y: v[0].y }, { x: v[1].x, y: v[1].y }, { x: v[2].x, y: v[2].y }, { x: v[3].x, y: v[3].y }];
+        break;
+      }
+    }
+    if (quad) {
+      const o = orderCorners(quad);
+      result = {
+        tl: { x: o.tl.x / W, y: o.tl.y / H }, tr: { x: o.tr.x / W, y: o.tr.y / H },
+        br: { x: o.br.x / W, y: o.br.y / H }, bl: { x: o.bl.x / W, y: o.bl.y / H },
+      };
     }
   } catch (e) { result = null; }
-  if (src) src.delete(); if (gray) gray.delete(); if (edged) edged.delete();
-  if (contours) contours.delete(); if (hierarchy) hierarchy.delete();
+  owned.forEach((m) => { try { m.delete(); } catch (e) {} });
+  [src, gray, edged, kernel, contours, hierarchy].forEach((m) => { if (m) try { m.delete(); } catch (e) {} });
   return result;
 }
-// perspective-crop the frame to the detected document
-function warpToDoc(canvas, c) {
+// perspective-crop a canvas to the detected document (cn = normalized corners)
+function warpToDoc(canvas, cn) {
+  const Wc = canvas.width, Hc = canvas.height;
+  const c = {
+    tl: { x: cn.tl.x * Wc, y: cn.tl.y * Hc }, tr: { x: cn.tr.x * Wc, y: cn.tr.y * Hc },
+    br: { x: cn.br.x * Wc, y: cn.br.y * Hc }, bl: { x: cn.bl.x * Wc, y: cn.bl.y * Hc },
+  };
   const src = cv.imread(canvas);
   const W = Math.max(40, Math.round(Math.max(dist(c.tl, c.tr), dist(c.bl, c.br))));
   const H = Math.max(40, Math.round(Math.max(dist(c.tl, c.bl), dist(c.tr, c.br))));
@@ -485,24 +524,22 @@ function warpToDoc(canvas, c) {
   return out;
 }
 const detCanvas = document.createElement("canvas");
-function drawOverlay(corners, dw) {
+function drawOverlay(cn) {
   const cw = camOverlay.clientWidth, ch = camOverlay.clientHeight;
   camOverlay.width = cw; camOverlay.height = ch;
   const ctx = camOverlay.getContext("2d");
   ctx.clearRect(0, 0, cw, ch);
-  if (!corners) return;
+  if (!cn) return;
   const vw = camVideo.videoWidth, vh = camVideo.videoHeight;
+  if (!vw) return;
   const scale = Math.max(cw / vw, ch / vh), offX = (cw - vw * scale) / 2, offY = (ch - vh * scale) / 2;
-  const f = (vw / dw) * scale;
-  const m = (p) => ({ x: p.x * f + offX, y: p.y * f + offY });
-  const tl = m(corners.tl), tr = m(corners.tr), br = m(corners.br), bl = m(corners.bl);
+  const m = (p) => ({ x: p.x * vw * scale + offX, y: p.y * vh * scale + offY });
+  const tl = m(cn.tl), tr = m(cn.tr), br = m(cn.br), bl = m(cn.bl);
   ctx.beginPath(); ctx.moveTo(tl.x, tl.y); ctx.lineTo(tr.x, tr.y); ctx.lineTo(br.x, br.y); ctx.lineTo(bl.x, bl.y); ctx.closePath();
   ctx.fillStyle = "rgba(58,224,180,0.18)"; ctx.fill();
   ctx.lineWidth = 4; ctx.strokeStyle = "#3ae0b4"; ctx.lineJoin = "round"; ctx.stroke();
-  // corner accents
   ctx.lineWidth = 6;
-  const seg = 26;
-  const pts = [tl, tr, br, bl];
+  const seg = 26, pts = [tl, tr, br, bl];
   for (let i = 0; i < 4; i++) {
     const p = pts[i], a = pts[(i + 3) % 4], b = pts[(i + 1) % 4];
     const to = (q) => { const d = Math.hypot(q.x - p.x, q.y - p.y) || 1; return { x: p.x + (q.x - p.x) / d * seg, y: p.y + (q.y - p.y) / d * seg }; };
@@ -510,16 +547,25 @@ function drawOverlay(corners, dw) {
     ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(p.x, p.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
   }
 }
+let lastCorners = null, lastSeenAt = 0, stableCount = 0;
+function cornersClose(a, b) {
+  if (!a || !b) return false;
+  for (const k of ["tl", "tr", "br", "bl"]) if (Math.hypot(a[k].x - b[k].x, a[k].y - b[k].y) > 0.04) return false;
+  return true;
+}
 function detectTick() {
   if (!cameraEl.classList.contains("on")) return;
   if (cvReady && camVideo.videoWidth) {
     const vw = camVideo.videoWidth, vh = camVideo.videoHeight;
-    const dw = 320, dh = Math.round(320 * vh / vw);
+    const dw = Math.min(480, vw), dh = Math.round(dw * vh / vw);
     detCanvas.width = dw; detCanvas.height = dh;
     detCanvas.getContext("2d").drawImage(camVideo, 0, 0, dw, dh);
-    const corners = findCorners(detCanvas);
-    drawOverlay(corners, dw);
-    $("cam-hint").textContent = corners ? "Document detected — tap to capture" : "Point at a document";
+    const cn = findCorners(detCanvas);
+    drawOverlay(cn);
+    if (cn) { stableCount = cornersClose(cn, lastCorners) ? stableCount + 1 : 0; lastCorners = cn; lastSeenAt = Date.now(); }
+    else { stableCount = 0; }
+    if (!scan.files.length) $("cam-hint").textContent = cn ? "Document detected — tap shutter" : "Point at a document";
+    if (autoCapture && cn && stableCount >= 6) { stableCount = 0; doCapture(); }
   }
   detectTimer = setTimeout(detectTick, 180);
 }
@@ -531,6 +577,8 @@ async function openCamera(reset = true) {
       video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
     camVideo.srcObject = camStream;
     await camVideo.play();
+    lastCorners = null; stableCount = 0;
+    applyLivePreview();
     updateCamUI();
     cameraEl.classList.add("on");
     detectTick();
@@ -565,6 +613,23 @@ document.querySelectorAll(".cam-seg button").forEach((b) => b.onclick = () => {
   document.querySelectorAll(".cam-seg button").forEach((x) => x.classList.toggle("active", x === b));
 });
 
+/* mode strip: Scan + ID Cards are functional; others inform and fall back to Scan */
+const MODE_INFO = {
+  scan: "Scan: auto-crop + enhance each page",
+  idcard: "ID Card: take front & back — both go on one page",
+  text: "Text (OCR) isn't installed yet — tell me to add it",
+  toword: "To Word (OCR) isn't installed yet — tell me to add it",
+  sign: "Sign: coming soon",
+  questionset: "Question Set isn't a scanner feature",
+};
+document.querySelectorAll(".cam-modes span").forEach((s) => s.onclick = () => {
+  const m = s.dataset.mode;
+  document.querySelectorAll(".cam-modes span").forEach((x) => x.classList.toggle("active", x === s));
+  scanType = (m === "scan" || m === "idcard") ? m : "scan"; // others behave like Scan for now
+  if (m === "idcard") captureMode = "batch"; // need at least 2 shots
+  toast(MODE_INFO[m] || "");
+});
+
 /* flash / torch toggle */
 let torchOn = false;
 $("cam-flash").onclick = async () => {
@@ -578,13 +643,32 @@ $("cam-flash").onclick = async () => {
   } catch (e) { toast("Flash not available"); }
 };
 
-/* filter dot cycles the scan look (applied on review/save) */
+/* filter dot cycles the scan look + previews it live on the video */
 const FILTERS = ["gray", "bw", "color"], FILTER_LABEL = { gray: "Enhance", bw: "B&W", color: "Color" };
+function applyLivePreview() {
+  camVideo.style.filter =
+    scan.mode === "bw" ? "grayscale(1) contrast(2.2) brightness(1.1)" :
+    scan.mode === "gray" ? "contrast(1.2) brightness(1.05) saturate(.9)" : "none";
+}
 $("cam-filter").onclick = () => {
   scan.mode = FILTERS[(FILTERS.indexOf(scan.mode) + 1) % FILTERS.length];
+  applyLivePreview();
   toast("Filter: " + FILTER_LABEL[scan.mode]);
 };
-$("cam-more").onclick = () => toast("HD scan · auto edge-detect are on");
+
+/* HD toggles capture quality/resolution */
+$("cam-hd").onclick = () => {
+  hdMode = !hdMode;
+  $("cam-hd").classList.toggle("off", !hdMode);
+  toast(hdMode ? "HD on — higher quality" : "HD off — smaller files");
+};
+
+/* ••• toggles auto-capture (shoots when a document is held steady) */
+$("cam-more").onclick = () => {
+  autoCapture = !autoCapture;
+  $("cam-more").classList.toggle("on", autoCapture);
+  toast(autoCapture ? "Auto-capture ON — hold steady on a document" : "Auto-capture OFF");
+};
 
 /* import existing photos as scanned pages, staying in the camera */
 $("cam-grid").onclick = () => $("cam-gallery-input").click();
@@ -608,19 +692,27 @@ function finishToReview() {
 }
 $("cam-modify").onclick = finishToReview;
 $("cam-thumb-wrap").onclick = finishToReview;
-$("cam-shutter").onclick = () => {
+function doCapture() {
   if (!camVideo.videoWidth) return;
   const c = document.createElement("canvas");
   c.width = camVideo.videoWidth; c.height = camVideo.videoHeight;
   c.getContext("2d").drawImage(camVideo, 0, 0);
-  let pageCanvas = c;
-  if (cvReady) { try { const corners = findCorners(c); if (corners) pageCanvas = warpToDoc(c, corners); } catch (e) {} }
+  // prefer the corners the green box is currently showing; else detect on the still
+  let cn = null;
+  if (cvReady) {
+    if (lastCorners && (Date.now() - lastSeenAt) < 800) cn = lastCorners;
+    else { try { cn = findCorners(c); } catch (e) {} }
+  }
+  let pageCanvas = c, cropped = false;
+  if (cn) { try { pageCanvas = warpToDoc(c, cn); cropped = true; } catch (e) { pageCanvas = c; } }
   pageCanvas.toBlob((blob) => {
     scan.files.push(new File([blob], "page.jpg", { type: "image/jpeg" }));
     updateCamUI();
+    if (!cropped) toast("No clear document edges — captured full frame");
     if (captureMode === "single") finishToReview();
-  }, "image/jpeg", 0.92);
-};
+  }, "image/jpeg", hdMode ? 0.95 : 0.85);
+}
+$("cam-shutter").onclick = doCapture;
 $("cam-done").onclick = finishToReview;
 $("qc-images").onclick = () => { scan = { files: [], mode: "gray" }; $("scan-title").value = ""; $("img-input").click(); };
 
@@ -650,12 +742,33 @@ async function renderScanPages() {
     const img = document.createElement("img"); img.src = URL.createObjectURL(blob); wrap.append(img);
   }
 }
+// place two scanned images onto one white page (used by ID Cards mode)
+async function combinePair(blobA, blobB) {
+  const a = await createImageBitmap(blobA);
+  const b = blobB ? await createImageBitmap(blobB) : null;
+  const pad = 40, gap = 40;
+  const innerW = Math.max(a.width, b ? b.width : 0);
+  const W = innerW + pad * 2;
+  const H = pad * 2 + a.height + (b ? gap + b.height : 0);
+  const cv2 = document.createElement("canvas"); cv2.width = W; cv2.height = H;
+  const ctx = cv2.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(a, pad + (innerW - a.width) / 2, pad);
+  if (b) ctx.drawImage(b, pad + (innerW - b.width) / 2, pad + a.height + gap);
+  const blob = await new Promise((r) => cv2.toBlob(r, "image/jpeg", 0.9));
+  return { blob, w: W, h: H };
+}
 $("scan-save").onclick = async () => {
   if (!scan.files.length) { toast("No pages to save"); return; }
   toast("Saving…");
   try {
-    const pages = [];
+    let pages = [];
     for (const f of scan.files) pages.push(await processFile(f, scan.mode));
+    if (scanType === "idcard" && pages.length > 1) {
+      const combined = [];
+      for (let i = 0; i < pages.length; i += 2) combined.push(await combinePair(pages[i].blob, pages[i + 1] ? pages[i + 1].blob : null));
+      pages = combined;
+    }
     const created = Date.now();
     const name = ($("scan-title").value || "").trim() || ("Scan " + fmtDate(created));
     await dbPut({ id: "d" + created + "_" + Math.round(performance.now()), name, created, pages });

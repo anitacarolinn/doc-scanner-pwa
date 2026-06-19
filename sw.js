@@ -1,5 +1,5 @@
 // Simple offline cache for the app shell. Bump CACHE to force an update.
-const CACHE = "docscanner-v3";
+const CACHE = "docscanner-v4";
 const ASSETS = [
   "./",
   "./index.html",
@@ -8,6 +8,7 @@ const ASSETS = [
   "./vendor/opencv.js",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
+  "./icons/apple-touch-icon.png",
 ];
 
 self.addEventListener("install", (e) => {
