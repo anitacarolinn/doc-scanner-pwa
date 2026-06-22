@@ -85,6 +85,10 @@
   .sheet .titlerow input { width: 100%; padding: 11px 12px; border-radius: 10px; border: none; font-size: 15px; }
   .sheet .addmore { display: block; width: 100%; padding: 12px; margin-bottom: 10px; background: #1f1f1f;
                     color: var(--teal); border: 1px dashed #3a3a3a; border-radius: 10px; font-size: 14px; cursor: pointer; }
+  .sheet .adjust { padding: 4px 16px 8px; display: flex; flex-direction: column; gap: 9px; }
+  .sheet .adjust label { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #cbd5e1; }
+  .sheet .adjust label span { width: 80px; flex: none; }
+  .sheet .adjust input[type=range] { flex: 1; accent-color: var(--teal); }
   #ocr-status { padding: 6px 16px 10px; color: var(--teal); font-size: 13px; }
   #ocr-text { flex: 1; margin: 0 16px; padding: 12px; border-radius: 10px; border: none; resize: none;
               font-size: 15px; line-height: 1.5; background: #fff; color: #111; font-family: inherit; }
@@ -101,6 +105,20 @@
   #view-doc .vbar button.share { background: var(--teal); color: #fff; border-color: var(--teal); }
   #view-doc .vbar button.del { color: #ef4444; }
   #view-doc .pages img { width: 100%; border-radius: 8px; margin-bottom: 10px; box-shadow: 0 1px 6px rgba(0,0,0,.12); }
+  #view-doc .pages { padding-bottom: 76px; }
+  #doc-pages .pcard { position: relative; margin-bottom: 12px; }
+  #doc-pages .pcard img { width: 100%; border-radius: 8px; box-shadow: 0 1px 6px rgba(0,0,0,.12); display: block; margin: 0; }
+  #doc-pages .pcard .pnum { position: absolute; left: 10px; top: 10px; background: rgba(17,24,39,.62); color: #fff;
+    font-size: 12px; padding: 3px 9px; border-radius: 11px; }
+  #doc-pages .pcard .pacts { position: absolute; top: 10px; right: 10px; display: flex; gap: 8px; }
+  #doc-pages .pcard .pacts button { width: 36px; height: 36px; border-radius: 9px; border: none; background: rgba(17,24,39,.62);
+    display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  #doc-pages .pcard .pacts .ic { width: 18px; height: 18px; stroke: #fff; }
+  .docfoot { position: fixed; left: 0; right: 0; bottom: 0; z-index: 21; max-width: 560px; margin: 0 auto;
+    background: #fff; border-top: 1px solid var(--line); padding: 10px 16px calc(10px + var(--safe-b)); display: flex; gap: 10px; }
+  .docfoot button { flex: 1; padding: 12px; border-radius: 10px; border: none; background: var(--teal); color: #fff;
+    font-weight: 600; font-size: 14px; display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; }
+  .docfoot .ic { width: 18px; height: 18px; stroke: #fff; }
 
   .toast { position: fixed; left: 50%; bottom: calc(96px + var(--safe-b)); transform: translateX(-50%);
            background: #111; color: #fff; padding: 10px 16px; border-radius: 22px; font-size: 13px; z-index: 60;
@@ -220,6 +238,9 @@
       <button class="del" id="doc-del"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" stroke="#ef4444"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
     </div>
     <div class="pages" id="doc-pages"></div>
+    <div class="docfoot">
+      <button id="doc-add"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg> Add pages</button>
+    </div>
   </section>
 </div>
 
@@ -293,6 +314,11 @@
     <button data-mode="gray" class="active">Enhance</button>
     <button data-mode="bw">B&amp;W</button>
   </div>
+  <div class="adjust" id="adjust">
+    <label><span>Brightness</span><input type="range" id="adj-bri" min="-60" max="60" value="10"></label>
+    <label><span>Contrast</span><input type="range" id="adj-con" min="60" max="240" value="140"></label>
+    <label><span>Sharpness</span><input type="range" id="adj-sharp" min="0" max="100" value="40"></label>
+  </div>
   <div class="titlerow"><input id="scan-title" placeholder="Document name"></div>
 </div>
 
@@ -346,38 +372,80 @@ async function dbGet(id) { const d = await db(); return new Promise((res, rej) =
 async function dbDel(id) { const d = await db(); return new Promise((res, rej) => { const t = d.transaction("docs", "readwrite"); t.objectStore("docs").delete(id); t.oncomplete = res; t.onerror = () => rej(t.error); }); }
 
 /* ---------- image processing (the "scan" look) ---------- */
-async function processFile(file, mode) {
+// Adjustable enhance settings (driven by the sliders in the review sheet)
+let enh = { brightness: 10, contrast: 1.4, sharpness: 40 };
+
+// Fast, good-looking enhance via OpenCV: brightness/contrast, unsharp-mask
+// sharpening (kills the "blurry photo" look), adaptive threshold for B&W.
+function enhanceCanvasCV(canvas, mode, opts) {
+  const src = cv.imread(canvas);
+  const work = new cv.Mat();
+  if (mode === "color") cv.cvtColor(src, work, cv.COLOR_RGBA2RGB);
+  else cv.cvtColor(src, work, cv.COLOR_RGBA2GRAY);
+  work.convertTo(work, -1, opts.contrast, opts.brightness); // alpha=contrast, beta=brightness
+  if (mode === "bw") {
+    cv.adaptiveThreshold(work, work, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, 12);
+  } else if (opts.sharpness > 0) {
+    const blur = new cv.Mat();
+    cv.GaussianBlur(work, blur, new cv.Size(0, 0), 2.2);
+    const amt = opts.sharpness / 50; // 0..2
+    cv.addWeighted(work, 1 + amt, blur, -amt, 0, work);
+    blur.delete();
+  }
+  cv.imshow(canvas, work);
+  src.delete(); work.delete();
+}
+// Pure-canvas fallback when OpenCV isn't ready (no sharpening)
+function legacyEnhance(ctx, w, h, mode, opts) {
+  const im = ctx.getImageData(0, 0, w, h), d = im.data, c = opts.contrast, b = opts.brightness;
+  for (let i = 0; i < d.length; i += 4) {
+    if (mode === "color") {
+      for (let k = 0; k < 3; k++) { let v = (d[i + k] - 128) * c + 128 + b; d[i + k] = v < 0 ? 0 : v > 255 ? 255 : v; }
+    } else {
+      let v = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      v = (v - 128) * c + 128 + b;
+      if (mode === "bw") v = v > 150 ? 255 : 0;
+      v = v < 0 ? 0 : v > 255 ? 255 : v;
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+  }
+  ctx.putImageData(im, 0, 0);
+}
+async function processFile(file, mode, opts) {
+  opts = opts || enh;
   const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
   const maxDim = hdMode ? 2200 : 1500;
   const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
   const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale);
   const canvas = document.createElement("canvas"); canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingQuality = "high";
   ctx.drawImage(bmp, 0, 0, w, h);
-  if (mode !== "color") {
-    const im = ctx.getImageData(0, 0, w, h), d = im.data;
-    for (let i = 0; i < d.length; i += 4) {
-      let v = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
-      if (mode === "bw") v = v > 150 ? 255 : 0;
-      else v = (v - 128) * 1.45 + 128 + 12; // enhance: contrast + slight brighten
-      v = v < 0 ? 0 : v > 255 ? 255 : v;
-      d[i] = d[i+1] = d[i+2] = v;
-    }
-    ctx.putImageData(im, 0, 0);
+  const needsWork = mode !== "color" || opts.brightness !== 0 || opts.contrast !== 1 || opts.sharpness > 0;
+  if (needsWork) {
+    let ok = false;
+    if (cvReady) { try { enhanceCanvasCV(canvas, mode, opts); ok = true; } catch (e) {} }
+    if (!ok) legacyEnhance(ctx, w, h, mode, opts);
   }
-  const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.82));
-  return { blob, w, h };
+  const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.92));
+  return { blob, w: canvas.width, h: canvas.height };
 }
 
 /* ---------- build a PDF from page blobs (for share/export) ---------- */
 async function buildPdf(pages) {
   const { PDFDocument } = PDFLib;
   const doc = await PDFDocument.create();
+  const A4 = [595.28, 841.89], margin = 18;
   for (const p of pages) {
     const bytes = new Uint8Array(await p.blob.arrayBuffer());
     const jpg = await doc.embedJpg(bytes);
-    const page = doc.addPage([jpg.width, jpg.height]);
-    page.drawImage(jpg, { x: 0, y: 0, width: jpg.width, height: jpg.height });
+    // A4 page; landscape if the image is wider than tall; image fitted & centered
+    const landscape = jpg.width > jpg.height;
+    const pw = landscape ? A4[1] : A4[0], ph = landscape ? A4[0] : A4[1];
+    const page = doc.addPage([pw, ph]);
+    const s = Math.min((pw - margin * 2) / jpg.width, (ph - margin * 2) / jpg.height);
+    const dw = jpg.width * s, dh = jpg.height * s;
+    page.drawImage(jpg, { x: (pw - dw) / 2, y: (ph - dh) / 2, width: dw, height: dh });
   }
   return doc.save();
 }
@@ -386,6 +454,9 @@ async function buildPdf(pages) {
 function show(view) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("on", v.id === "view-" + view));
   document.querySelectorAll("nav .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === view));
+  // hide the menu bar (and top search) while editing a document — clean full-screen edit
+  document.querySelector("nav").style.display = (view === "doc") ? "none" : "flex";
+  document.querySelector("header").style.display = (view === "doc") ? "none" : "flex";
   if (view === "home") renderHome();
   if (view === "files") renderFiles();
 }
@@ -425,10 +496,51 @@ async function openDoc(id) {
   const doc = await dbGet(id); if (!doc) return;
   currentDocId = id; currentDoc = doc;
   $("doc-name").textContent = doc.name || "Untitled";
-  const pg = $("doc-pages"); pg.innerHTML = "";
-  doc.pages.forEach((p) => { const img = document.createElement("img"); img.src = URL.createObjectURL(p.blob); pg.append(img); });
+  renderDocPages(doc);
   show("doc");
 }
+function renderDocPages(doc) {
+  const pg = $("doc-pages"); pg.innerHTML = "";
+  doc.pages.forEach((p, i) => {
+    const card = document.createElement("div"); card.className = "pcard";
+    const img = document.createElement("img"); img.src = URL.createObjectURL(p.blob);
+    const num = document.createElement("div"); num.className = "pnum"; num.textContent = "Page " + (i + 1);
+    const acts = document.createElement("div"); acts.className = "pacts";
+    const rot = document.createElement("button"); rot.title = "Rotate";
+    rot.innerHTML = '<svg class="ic" viewBox="0 0 24 24"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>';
+    rot.onclick = () => docRotate(i);
+    const del = document.createElement("button"); del.title = "Delete page";
+    del.innerHTML = '<svg class="ic" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+    del.onclick = () => docDeletePage(i);
+    acts.append(rot, del); card.append(img, num, acts); pg.append(card);
+  });
+}
+async function rotateBlob(blob, deg) {
+  const bmp = await createImageBitmap(blob);
+  const swap = (deg % 180) !== 0;
+  const c = document.createElement("canvas");
+  c.width = swap ? bmp.height : bmp.width; c.height = swap ? bmp.width : bmp.height;
+  const ctx = c.getContext("2d");
+  ctx.translate(c.width / 2, c.height / 2); ctx.rotate(deg * Math.PI / 180);
+  ctx.drawImage(bmp, -bmp.width / 2, -bmp.height / 2);
+  const b = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.92));
+  return { blob: b, w: c.width, h: c.height };
+}
+async function docRotate(i) {
+  if (!currentDoc) return;
+  currentDoc.pages[i] = await rotateBlob(currentDoc.pages[i].blob, 90);
+  await dbPut(currentDoc); renderDocPages(currentDoc);
+}
+async function docDeletePage(i) {
+  if (!currentDoc) return;
+  if (currentDoc.pages.length <= 1) {
+    if (!confirm("This is the only page — delete the whole document?")) return;
+    await dbDel(currentDoc.id); toast("Deleted"); show("files"); return;
+  }
+  if (!confirm("Delete page " + (i + 1) + "?")) return;
+  currentDoc.pages.splice(i, 1); await dbPut(currentDoc); renderDocPages(currentDoc);
+}
+$("doc-add").onclick = () => { appendTarget = currentDocId; openCamera(true); };
 $("doc-back").onclick = () => show("files");
 $("doc-del").onclick = async () => {
   if (!currentDocId) return;
@@ -452,6 +564,7 @@ $("doc-share").onclick = async () => {
 
 /* ---------- scanning / capture flow ---------- */
 let scan = { files: [], mode: "gray" }; // raw captured Files + chosen filter
+let appendTarget = null;                // doc id when adding pages to an existing document
 const scanSheet = $("scan-sheet");
 const cameraEl = $("camera"), camVideo = $("cam-video"), camOverlay = $("cam-overlay");
 let camStream = null, captureMode = "batch", detectTimer = null;
@@ -542,7 +655,7 @@ function warpToDoc(canvas, cn) {
   const s = cv.matFromArray(4, 1, cv.CV_32FC2, [c.tl.x, c.tl.y, c.tr.x, c.tr.y, c.br.x, c.br.y, c.bl.x, c.bl.y]);
   const d = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, W, 0, W, H, 0, H]);
   const M = cv.getPerspectiveTransform(s, d), dst = new cv.Mat();
-  cv.warpPerspective(src, dst, M, new cv.Size(W, H));
+  cv.warpPerspective(src, dst, M, new cv.Size(W, H), cv.INTER_CUBIC, cv.BORDER_CONSTANT, new cv.Scalar());
   const out = document.createElement("canvas"); out.width = W; out.height = H; cv.imshow(out, dst);
   src.delete(); dst.delete(); M.delete(); s.delete(); d.delete();
   return out;
@@ -598,7 +711,8 @@ async function openCamera(reset = true) {
   if (reset) { scan = { files: [], mode: "gray" }; $("scan-title").value = ""; }
   try {
     camStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 3840 }, height: { ideal: 2160 },
+               advanced: [{ focusMode: "continuous" }] }, audio: false });
     camVideo.srcObject = camStream;
     await camVideo.play();
     lastCorners = null; stableCount = 0;
@@ -630,7 +744,7 @@ function updateCamUI() {
   if (has) $("cam-thumb").src = URL.createObjectURL(scan.files[n - 1]);
 }
 $("nav-cam").onclick = () => openCamera(true);
-$("cam-close").onclick = () => { stopCamera(); cameraEl.classList.remove("on"); scan = { files: [], mode: "gray" }; };
+$("cam-close").onclick = () => { stopCamera(); cameraEl.classList.remove("on"); scan = { files: [], mode: "gray" }; appendTarget = null; };
 $("cam-undo").onclick = () => { scan.files.pop(); updateCamUI(); };
 document.querySelectorAll(".cam-seg button").forEach((b) => b.onclick = () => {
   captureMode = b.dataset.cap;
@@ -751,12 +865,22 @@ function addCaptured(fileList) {
 $("cam-input").onchange = (e) => { addCaptured(e.target.files); e.target.value = ""; };
 $("img-input").onchange = (e) => { addCaptured(e.target.files); e.target.value = ""; };
 $("scan-addmore").onclick = () => { scanSheet.classList.remove("on"); openCamera(false); };
-$("scan-cancel").onclick = () => { scanSheet.classList.remove("on"); scan = { files: [], mode: "gray" }; };
+$("scan-cancel").onclick = () => { scanSheet.classList.remove("on"); scan = { files: [], mode: "gray" }; appendTarget = null; };
 
 document.querySelectorAll(".sheet .filters button").forEach((b) => b.onclick = () => {
   scan.mode = b.dataset.mode;
   document.querySelectorAll(".sheet .filters button").forEach((x) => x.classList.toggle("active", x === b));
   renderScanPages();
+});
+
+// Enhance sliders -> update settings + re-render preview (debounced)
+let adjTimer = null;
+function readAdjust() {
+  enh = { brightness: +$("adj-bri").value, contrast: (+$("adj-con").value) / 100, sharpness: +$("adj-sharp").value };
+}
+["adj-bri", "adj-con", "adj-sharp"].forEach((id) => {
+  const el = $(id); if (!el) return;
+  el.addEventListener("input", () => { readAdjust(); clearTimeout(adjTimer); adjTimer = setTimeout(renderScanPages, 250); });
 });
 
 async function renderScanPages() {
@@ -792,6 +916,17 @@ $("scan-save").onclick = async () => {
       const combined = [];
       for (let i = 0; i < pages.length; i += 2) combined.push(await combinePair(pages[i].blob, pages[i + 1] ? pages[i + 1].blob : null));
       pages = combined;
+    }
+    if (appendTarget) { // adding pages to an existing document
+      const tgt = await dbGet(appendTarget);
+      if (tgt) {
+        tgt.pages = tgt.pages.concat(pages);
+        await dbPut(tgt);
+        const tid = appendTarget; appendTarget = null;
+        scanSheet.classList.remove("on"); scan = { files: [], mode: "gray" };
+        toast("Added " + pages.length + " page(s)"); openDoc(tid); return;
+      }
+      appendTarget = null;
     }
     const created = Date.now();
     const name = ($("scan-title").value || "").trim() || ("Scan " + fmtDate(created));
