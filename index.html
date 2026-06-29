@@ -414,7 +414,7 @@ function legacyEnhance(ctx, w, h, mode, opts) {
 async function processFile(file, mode, opts) {
   opts = opts || enh;
   const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
-  const maxDim = hdMode ? 2200 : 1500;
+  const maxDim = hdMode ? 3000 : 1500;
   const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
   const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale);
   const canvas = document.createElement("canvas"); canvas.width = w; canvas.height = h;
@@ -568,7 +568,7 @@ let appendTarget = null;                // doc id when adding pages to an existi
 const scanSheet = $("scan-sheet");
 const cameraEl = $("camera"), camVideo = $("cam-video"), camOverlay = $("cam-overlay");
 let camStream = null, captureMode = "batch", detectTimer = null;
-let hdMode = true, autoCapture = false, scanType = "scan";
+let hdMode = true, autoCapture = false, scanType = "scan", pendingHiRes = false;
 
 /* ---- OpenCV document edge detection ---- */
 let cvReady = false;
@@ -702,7 +702,7 @@ function detectTick() {
     if (cn) { stableCount = cornersClose(cn, lastCorners) ? stableCount + 1 : 0; lastCorners = cn; lastSeenAt = Date.now(); }
     else { stableCount = 0; }
     if (!scan.files.length) $("cam-hint").textContent = cn ? "Document detected — tap shutter" : "Point at a document";
-    if (autoCapture && cn && stableCount >= 6) { stableCount = 0; doCapture(); }
+    if (autoCapture && !hdMode && cn && stableCount >= 6) { stableCount = 0; doCapture(); }
   }
   detectTimer = setTimeout(detectTick, 180);
 }
@@ -715,6 +715,12 @@ async function openCamera(reset = true) {
                advanced: [{ focusMode: "continuous" }] }, audio: false });
     camVideo.srcObject = camStream;
     await camVideo.play();
+    // push the live preview to the highest resolution the camera supports
+    try {
+      const vt = camStream.getVideoTracks()[0];
+      const caps = vt.getCapabilities ? vt.getCapabilities() : null;
+      if (caps && caps.width && caps.height) await vt.applyConstraints({ width: { ideal: caps.width.max }, height: { ideal: caps.height.max } });
+    } catch (e) {}
     lastCorners = null; stableCount = 0;
     applyLivePreview();
     updateCamUI();
@@ -798,7 +804,7 @@ $("cam-filter").onclick = () => {
 $("cam-hd").onclick = () => {
   hdMode = !hdMode;
   $("cam-hd").classList.toggle("off", !hdMode);
-  toast(hdMode ? "HD on — higher quality" : "HD off — smaller files");
+  toast(hdMode ? "HD on — full-resolution sharp photo (uses your camera)" : "HD off — quick live capture (softer)");
 };
 
 /* ••• toggles auto-capture (shoots when a document is held steady) */
@@ -830,12 +836,14 @@ function finishToReview() {
 }
 $("cam-modify").onclick = finishToReview;
 $("cam-thumb-wrap").onclick = finishToReview;
+// HD on  -> full-resolution native photo (sharp, like CamScanner)
+// HD off -> quick grab from the live preview frame (lower res, but instant)
 function doCapture() {
+  if (hdMode) { pendingHiRes = true; $("cam-input").click(); return; }
   if (!camVideo.videoWidth) return;
   const c = document.createElement("canvas");
   c.width = camVideo.videoWidth; c.height = camVideo.videoHeight;
   c.getContext("2d").drawImage(camVideo, 0, 0);
-  // prefer the corners the green box is currently showing; else detect on the still
   let cn = null;
   if (cvReady) {
     if (lastCorners && (Date.now() - lastSeenAt) < 800) cn = lastCorners;
@@ -848,7 +856,26 @@ function doCapture() {
     updateCamUI();
     if (!cropped) toast("No clear document edges — captured full frame");
     if (captureMode === "single") finishToReview();
-  }, "image/jpeg", hdMode ? 0.95 : 0.85);
+  }, "image/jpeg", 0.9);
+}
+// Auto-crop a full-resolution photo: detect edges on a small copy (fast),
+// then perspective-crop the FULL image so the document stays sharp.
+async function autoCropFile(file) {
+  const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+  const full = document.createElement("canvas"); full.width = bmp.width; full.height = bmp.height;
+  full.getContext("2d").drawImage(bmp, 0, 0);
+  let out = full, cropped = false;
+  if (cvReady) {
+    try {
+      const dw = Math.min(900, bmp.width), dh = Math.round(dw * bmp.height / bmp.width);
+      const small = document.createElement("canvas"); small.width = dw; small.height = dh;
+      small.getContext("2d").drawImage(bmp, 0, 0, dw, dh);
+      const cn = findCorners(small);
+      if (cn) { out = warpToDoc(full, cn); cropped = true; }
+    } catch (e) {}
+  }
+  const blob = await new Promise((r) => out.toBlob(r, "image/jpeg", 0.95));
+  return { file: new File([blob], "page.jpg", { type: "image/jpeg" }), cropped };
 }
 $("cam-shutter").onclick = doCapture;
 $("cam-done").onclick = finishToReview;
@@ -862,7 +889,22 @@ function addCaptured(fileList) {
   scanSheet.classList.add("on");
   renderScanPages();
 }
-$("cam-input").onchange = (e) => { addCaptured(e.target.files); e.target.value = ""; };
+$("cam-input").onchange = async (e) => {
+  const files = [...e.target.files].filter((f) => f.type.startsWith("image/"));
+  e.target.value = "";
+  if (!files.length) { pendingHiRes = false; return; }
+  if (pendingHiRes && cameraEl.classList.contains("on")) {
+    // HD shot taken from inside the scanner -> auto-crop full-res, stay in camera
+    pendingHiRes = false;
+    let anyUncropped = false;
+    for (const f of files) { const r = await autoCropFile(f); scan.files.push(r.file); if (!r.cropped) anyUncropped = true; }
+    updateCamUI();
+    if (anyUncropped) toast("No clear edges on a shot — kept the full photo");
+    if (captureMode === "single") finishToReview();
+  } else {
+    addCaptured(files); // fallback (e.g. getUserMedia blocked) -> straight to review
+  }
+};
 $("img-input").onchange = (e) => { addCaptured(e.target.files); e.target.value = ""; };
 $("scan-addmore").onclick = () => { scanSheet.classList.remove("on"); openCamera(false); };
 $("scan-cancel").onclick = () => { scanSheet.classList.remove("on"); scan = { files: [], mode: "gray" }; appendTarget = null; };
